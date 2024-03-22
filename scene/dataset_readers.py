@@ -79,7 +79,9 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         width = intr.width
 
         uid = intr.id
+        # rotation
         R = np.transpose(qvec2rotmat(extr.qvec))
+        # translation
         T = np.array(extr.tvec)
 
         if intr.model=="SIMPLE_PINHOLE":

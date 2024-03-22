@@ -28,7 +28,7 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, perturb_camera):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -76,6 +76,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        from scene.dataset_readers import CameraInfo
+        viewpoint_cam: CameraInfo
 
         # Render
         if (iteration - 1) == debug_from:
@@ -89,7 +91,33 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        if perturb_camera:
+            # rotate camera a little to the left
+            left_cam = viewpoint_cam.clone()
+            left_cam.R = torch.matmul(torch.tensor([[1, 0, 0], [0, 0.999, -0.0349], [0, 0.0349, 0.999]], device="cuda"),
+                                      viewpoint_cam.R)
+            # rotate camera a little to the right
+            right_cam = viewpoint_cam.clone()
+            right_cam.R = torch.matmul(
+                torch.tensor([[1, 0, 0], [0, 0.999, 0.0349], [0, -0.0349, 0.999]], device="cuda"), viewpoint_cam.R)
+            bg_left = torch.rand((3), device="cuda") if opt.random_background else background
+            bg_right = torch.rand((3), device="cuda") if opt.random_background else background
+            render_pkg_left = render(left_cam, gaussians, pipe, bg_left)
+            render_pkg_right = render(right_cam, gaussians, pipe, bg_right)
+            image_left, _, _, _ = render_pkg_left["render"], render_pkg_left["viewspace_points"], render_pkg_left[
+                "visibility_filter"], render_pkg_left["radii"]
+            image_right, _, _, _ = render_pkg_right["render"], render_pkg_right["viewspace_points"], render_pkg_right[
+                "visibility_filter"], render_pkg_right["radii"]
+            loss = (
+                (1.0 - opt.lambda_dssim) * Ll1
+                + opt.lambda_dssim * (1.0
+                                      - ssim(image, gt_image) / 3
+                                      - ssim(image_left, gt_image) / 3
+                                      - ssim(image_right, gt_image) / 3
+                                    ))
+
+        else:
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
 
         iter_end.record()
@@ -196,6 +224,9 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
+
+    parser.add_argument('--perturb_camera', default=False)
+
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
@@ -216,7 +247,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.perturb_camera)
 
     # All done
     print("\nTraining complete.")
