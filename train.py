@@ -97,7 +97,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # save image as "current.png"
             torchvision.utils.save_image(image, "current.png")
             # use ffmpeg to convert the image to a video of 1 frame, in y4m format
-            os.system("ffmpeg -y -i current.png -c:v libx264 -pix_fmt yuv420p -t 1 current.y4m")
+            os.system("ffmpeg -y -loop 1 -i current.png -c:v rawvideo -pix_fmt yuv420p -t 1 current.y4m ")
             # run vmaf on the video
             # vmaf is located at ~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf
             # run cambi
