@@ -28,7 +28,8 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, perturb_camera):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_cambi = False):
+    print("Train cambi: ", train_cambi)
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -91,31 +92,25 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        if perturb_camera:
-            # rotate camera a little to the left
-            left_cam = viewpoint_cam.clone()
-            left_cam.R = torch.matmul(torch.tensor([[1, 0, 0], [0, 0.999, -0.0349], [0, 0.0349, 0.999]], device="cuda"),
-                                      viewpoint_cam.R)
-            # rotate camera a little to the right
-            right_cam = viewpoint_cam.clone()
-            right_cam.R = torch.matmul(
-                torch.tensor([[1, 0, 0], [0, 0.999, 0.0349], [0, -0.0349, 0.999]], device="cuda"), viewpoint_cam.R)
-            bg_left = torch.rand((3), device="cuda") if opt.random_background else background
-            bg_right = torch.rand((3), device="cuda") if opt.random_background else background
-            render_pkg_left = render(left_cam, gaussians, pipe, bg_left)
-            render_pkg_right = render(right_cam, gaussians, pipe, bg_right)
-            image_left, _, _, _ = render_pkg_left["render"], render_pkg_left["viewspace_points"], render_pkg_left[
-                "visibility_filter"], render_pkg_left["radii"]
-            image_right, _, _, _ = render_pkg_right["render"], render_pkg_right["viewspace_points"], render_pkg_right[
-                "visibility_filter"], render_pkg_right["radii"]
-            loss = (
-                (1.0 - opt.lambda_dssim) * Ll1
-                + opt.lambda_dssim * (1.0
-                                      - ssim(image, gt_image) / 3
-                                      - ssim(image_left, gt_image) / 3
-                                      - ssim(image_right, gt_image) / 3
-                                    ))
 
+        if train_cambi:
+            # save image as "current.png"
+            torchvision.utils.save_image(image, "current.png")
+            # use ffmpeg to convert the image to a video of 1 frame, in y4m format
+            os.system("ffmpeg -y -i current.png -c:v libx264 -pix_fmt yuv420p -t 1 current.y4m")
+            # run vmaf on the video
+            # vmaf is located at ~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf
+            # run cambi
+            os.system(
+                "~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf -r current.y4m -d current.y4m --feature cambi --json --o current.json")
+            # extract the cambi score from the json file
+            # cat $ROOT/vidstats.json | jq .pooled_metrics.cambi.mean
+            with open("current.json") as f:
+                data = json.load(f)
+                cambi = data["pooled_metrics"]["cambi"]["mean"]
+            # cambi is between 0 and 24 (0 is better then 24), rescale it to be between 0 and 1 (1 is better)
+            cambi = 1 - float(cambi) / 24
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - 0.5*ssim(image, gt_image) - 0.5*cambi)
         else:
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
@@ -225,7 +220,7 @@ if __name__ == "__main__":
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
 
-    parser.add_argument('--perturb_camera', default=False)
+    parser.add_argument('--train_cambi', action='store_true', default=False)
 
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
@@ -247,7 +242,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     #network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.perturb_camera)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_cambi)
 
     # All done
     print("\nTraining complete.")
