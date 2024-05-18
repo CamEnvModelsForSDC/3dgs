@@ -22,13 +22,16 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import json
+import torchvision
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_cambi):
+    print("Training with cambi: ", train_cambi)
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -89,7 +92,28 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
+        if train_cambi:
+            # save image as "current.png"
+            torchvision.utils.save_image(image, "current.png")
+            # use ffmpeg to convert the image to a video of 1 frame, in y4m format
+            os.system("ffmpeg -y -i current.png -c:v libx264 -pix_fmt yuv420p -t 1 current.y4m")
+            # run vmaf on the video
+            # vmaf is located at ~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf
+            # run cambi
+            os.system(
+                "~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf -r current.y4m -d current.y4m --feature cambi --json --o current.json")
+            # extract the cambi score from the json file
+            # cat $ROOT/vidstats.json | jq .pooled_metrics.cambi.mean
+            with open("current.json") as f:
+                data = json.load(f)
+                cambi = data["pooled_metrics"]["cambi"]["mean"]
+            # cambi is between 0 and 24 (0 is better then 24), rescale it to be between 0 and 1 (1 is better)
+            cambi = 1 - float(cambi) / 24
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - 0.5 * ssim(image, gt_image) - 0.5 * cambi)
+        else:
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+
         loss.backward()
 
         iter_end.record()
@@ -205,6 +229,9 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+
+    parser.add_argument("--train_cambi", action="store_true", default=False)
+
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -216,7 +243,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_cambi)
 
     # All done
     print("\nTraining complete.")
