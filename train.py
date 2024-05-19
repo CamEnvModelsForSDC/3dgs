@@ -101,7 +101,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             current_json = f"current-{random_id}.json"
             torchvision.utils.save_image(image, current_png)
             # use ffmpeg to convert the image to a video of 1 frame, in y4m format
-            os.system(f"ffmpeg -y hide_banner -loglevel error -loop 1 -i {current_png} -r 1 -pix_fmt yuv420p -t 1 {current_y4m}")
+            os.system(f"ffmpeg -y -hide_banner -loglevel error -loop 1 -i {current_png} -r 1 -pix_fmt yuv420p -t 1 {current_y4m}")
             os.system(f"rm {current_png}")
             # run vmaf on the video
             # vmaf is located at ~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf
