@@ -32,7 +32,7 @@ except ImportError:
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_cambi):
     random_id = str(uuid.uuid4())[:8]
-    print("Training with cambi: ", train_cambi, random_id)
+    print("Training with cambi (v3): ", train_cambi, random_id)
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -107,23 +107,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # vmaf is located at ~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf
             # run cambi
             if not os.path.exists(current_y4m):
+                os.system(f"echo none >> cambi-{random_id}.txt")
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
             else:
                 os.system(
                     f"~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf -r {current_y4m} -d {current_y4m} --quiet --feature cambi --json --o {current_json}")
-                os.system("rm current.y4m")
+                os.system(f"rm {current_y4m}")
                 # extract the cambi score from the json file
                 # cat $ROOT/vidstats.json | jq .pooled_metrics.cambi.mean
                 if not os.path.exists(current_json):
+                    os.system(f"echo none >> cambi-{random_id}.txt")
                     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
                 else:
                     with open(current_json) as f:
                         data = json.load(f)
+                        # jq .pooled_metrics.cambi.mean
                         cambi = data["pooled_metrics"]["cambi"]["mean"]
                     os.system(f"rm {current_json}")
                     # cambi is between 0 and 24 (0 is better then 24), rescale it to be between 0 and 1 (1 is better)
                     cambi = 1 - float(cambi) / 24
-                    print("@cambi: ", cambi)
+                    os.system(f"echo {cambi} >> cambi-{random_id}.txt")
                     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - 0.5 * ssim(image, gt_image) - 0.5 * cambi)
         else:
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
