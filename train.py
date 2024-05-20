@@ -30,7 +30,7 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_cambi):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_cambi, train_cambi_after):
     random_id = str(uuid.uuid4())[:8]
     print("Training with cambi (v3): ", train_cambi, random_id)
     first_iter = 0
@@ -95,39 +95,42 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         Ll1 = l1_loss(image, gt_image)
 
         if train_cambi:
-            # save image as "current.png"
-            current_png = f"current-{random_id}.png"
-            current_y4m = f"current-{random_id}.y4m"
-            current_json = f"current-{random_id}.json"
-            torchvision.utils.save_image(image, current_png)
-            # use ffmpeg to convert the image to a video of 1 frame, in y4m format
-            os.system(f"ffmpeg -y -hide_banner -loglevel error -loop 1 -i {current_png} -r 1 -pix_fmt yuv420p -t 1 {current_y4m}")
-            os.system(f"rm {current_png}")
-            # run vmaf on the video
-            # vmaf is located at ~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf
-            # run cambi
-            if not os.path.exists(current_y4m):
-                os.system(f"echo none >> cambi-{random_id}.txt")
+            if train_cambi_after and iteration < opt.densify_until_iter:
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
             else:
-                os.system(
-                    f"~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf -r {current_y4m} -d {current_y4m} --quiet --feature cambi --json --o {current_json}")
-                os.system(f"rm {current_y4m}")
-                # extract the cambi score from the json file
-                # cat $ROOT/vidstats.json | jq .pooled_metrics.cambi.mean
-                if not os.path.exists(current_json):
+                # save image as "current.png"
+                current_png = f"current-{random_id}.png"
+                current_y4m = f"current-{random_id}.y4m"
+                current_json = f"current-{random_id}.json"
+                torchvision.utils.save_image(image, current_png)
+                # use ffmpeg to convert the image to a video of 1 frame, in y4m format
+                os.system(f"ffmpeg -y -hide_banner -loglevel error -loop 1 -i {current_png} -r 1 -pix_fmt yuv420p -t 1 {current_y4m}")
+                os.system(f"rm {current_png}")
+                # run vmaf on the video
+                # vmaf is located at ~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf
+                # run cambi
+                if not os.path.exists(current_y4m):
                     os.system(f"echo none >> cambi-{random_id}.txt")
                     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
                 else:
-                    with open(current_json) as f:
-                        data = json.load(f)
-                        # jq .pooled_metrics.cambi.mean
-                        cambi = data["pooled_metrics"]["cambi"]["mean"]
-                    os.system(f"rm {current_json}")
-                    # cambi is between 0 and 24 (0 is better then 24), rescale it to be between 0 and 1 (1 is better)
-                    cambi = 1 - float(cambi) / 24
-                    os.system(f"echo {cambi} >> cambi-{random_id}.txt")
-                    loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - 0.5 * ssim(image, gt_image) - 0.5 * cambi)
+                    os.system(
+                        f"~/hpcgs/lib/vmaf/libvmaf/build/tools/vmaf -r {current_y4m} -d {current_y4m} --quiet --feature cambi --json --o {current_json}")
+                    os.system(f"rm {current_y4m}")
+                    # extract the cambi score from the json file
+                    # cat $ROOT/vidstats.json | jq .pooled_metrics.cambi.mean
+                    if not os.path.exists(current_json):
+                        os.system(f"echo none >> cambi-{random_id}.txt")
+                        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+                    else:
+                        with open(current_json) as f:
+                            data = json.load(f)
+                            # jq .pooled_metrics.cambi.mean
+                            cambi = data["pooled_metrics"]["cambi"]["mean"]
+                        os.system(f"rm {current_json}")
+                        # cambi is between 0 and 24 (0 is better then 24), rescale it to be between 0 and 1 (1 is better)
+                        cambi = 1 - float(cambi) / 24
+                        os.system(f"echo {cambi} >> cambi-{random_id}.txt")
+                        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - 0.5 * ssim(image, gt_image) - 0.5 * cambi)
         else:
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
@@ -248,6 +251,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
     parser.add_argument("--train_cambi", action="store_true", default=False)
+    parser.add_argument("--train_cambi_after", action="store_true", default=False)
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -260,7 +264,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_cambi)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_cambi, args.train_cambi_after)
 
     # All done
     print("\nTraining complete.")
