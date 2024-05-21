@@ -30,9 +30,9 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_cambi, train_cambi_after):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, train_cambi_after):
     random_id = str(uuid.uuid4())[:8]
-    print("Training with cambi (v3): ", train_cambi, random_id)
+    print("Training with cambi (v4): ", opt.lambda_dcambi, random_id)
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -94,7 +94,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
 
-        if train_cambi:
+        if opt.lambda_dcambi > 0.0:
             if train_cambi_after and iteration < opt.densify_until_iter:
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
             else:
@@ -127,10 +127,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                             # jq .pooled_metrics.cambi.mean
                             cambi = data["pooled_metrics"]["cambi"]["mean"]
                         os.system(f"rm {current_json}")
-                        # cambi is between 0 and 24 (0 is better then 24), rescale it to be between 0 and 1 (1 is better)
-                        cambi = 1 - float(cambi) / 24
+                        # cambi is between 0 and 24 (lower is better), rescale it to be between 0 and 1 (0 is better)
+                        cambi = float(cambi) / 24.0
                         os.system(f"echo {cambi} >> cambi-{random_id}.txt")
-                        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - 0.5 * ssim(image, gt_image) - 0.5 * cambi)
+                        loss = (1.0 - opt.lambda_dssim - opt.lambda_dcambi) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image)) + opt.lambda_dcambi * cambi
         else:
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
 
@@ -250,7 +250,6 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
 
-    parser.add_argument("--train_cambi", action="store_true", default=False)
     parser.add_argument("--train_cambi_after", action="store_true", default=False)
 
     args = parser.parse_args(sys.argv[1:])
@@ -264,7 +263,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_cambi, args.train_cambi_after)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.train_cambi_after)
 
     # All done
     print("\nTraining complete.")
